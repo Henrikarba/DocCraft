@@ -1,5 +1,5 @@
-import { SvelteParser } from '../parsers/svelteParser';
-import type { ComponentDoc } from '../parsers/svelteParser';
+import { SvelteParser } from './svelteParser';
+import type { ComponentDoc } from './svelteParser';
 import fs from 'fs/promises';
 import path from 'path';
 

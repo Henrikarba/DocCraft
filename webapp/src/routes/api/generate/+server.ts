@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { DocGenerator } from '$lib/services/docGenerator';
+import { DocGenerator } from '$lib/svelte/docGenerator';
 
 export const POST: RequestHandler = async ({ request }) => {
   const { projectPath, outputPath } = await request.json();

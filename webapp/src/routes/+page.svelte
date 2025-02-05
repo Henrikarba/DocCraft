@@ -1,7 +1,7 @@
 <script lang="ts">
     import DocViewer from '$lib/components/docViewer.svelte';
-    import { docStore } from '$lib/stores/docStore';
-    import type { ComponentDoc } from '$lib/stores/docStore';
+    import { docStore } from '$lib/docStore';
+    import type { ComponentDoc } from '$lib/docStore';
 
     const frameworks = [
       { id: 'svelte', label: 'Svelte' },
@@ -183,7 +183,7 @@
           </div>
         {/if}
       </div>
-      {:else if activeTab === "view"}
+      {:else}
       {/if}
     </main>
   </div>
