@@ -1,5 +1,5 @@
 import type { Node, Comment } from 'estree';
-import * as estypes from 'estree';
+import type * as estree from 'estree';
 import { parse as svelteParser } from 'svelte/compiler';
 
 export interface ComponentDoc {
@@ -157,7 +157,7 @@ export class SvelteParser {
 		walkTemplate(template);
 	}
 
-	private inferType(node: estypes.Expression | null | undefined): string {
+	private inferType(node: estree.Expression | null | undefined): string {
 		if (!node) return 'any';
 		switch (node.type) {
 			case 'Literal':
@@ -171,7 +171,7 @@ export class SvelteParser {
 		}
 	}
 
-	private extractValue(node: estypes.Expression): string | undefined {
+	private extractValue(node: estree.Expression): string | undefined {
 		switch (node.type) {
 			case 'Literal':
 				return String(node.value);
