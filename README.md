@@ -13,7 +13,7 @@ DocCraft is an intuitive documentation generator and visualizer for multiple pro
 
 ## Currently Supported
 
-- Svelte (Components, Props, Events, Slots)
+- Svelte/SvelteKit (Components, Props, Events, Slots)
 - More frameworks coming soon and maybe more
 
 ## Planned Support
