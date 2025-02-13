@@ -1,5 +1,7 @@
 # DocCraft
 
+> ⚠️ **Development Status**: This project is currently in early development stage and is not yet ready for production use. Features may be incomplete or non-functional.
+
 A flexible documentation generator that leverages AI to create comprehensive documentation for your codebase. Built with SvelteKit, DocCraft automatically analyzes your source code and generates detailed documentation using your preferred AI provider.
 
 ## Features
