@@ -1,284 +1,281 @@
 <script lang="ts">
-	import DocViewer from '$lib/components/docViewer.svelte';
-	import AIEnhancementModal from '$lib/components/AIEnhancementModal.svelte';
-	import { docStore } from '$lib/docStore';
+	import { onMount } from 'svelte';
+	import type { Settings } from '$lib/types/settings';
+	import { parseTypescript } from '$lib/parsers/typescript';
+	import { parseSvelte } from '$lib/parsers/svelte';
+	import SettingsTab from '$lib/components/settings.svelte';
 
-	let inputType: 'file' | 'folder' = 'folder';
-	let projectPath = '';
-	let projectName = '';
-	let outputType: 'default' | 'custom' = 'default';
-	let outputPath = '';
+	let selectedType: 'file' | 'folder' = 'file';
+	let fileInput: HTMLInputElement;
+	let selectedFiles: FileList | null = null;
+	let settings: Settings;
 	let isProcessing = false;
-	let status = '';
-	let activeTab: 'generate' | 'view' = 'generate';
-	let showAIModal = false;
-	let docsGenerated = false;
+	let documentationOutput: any[] = [];
+	let activeTab: 'generator' | 'settings' = 'generator';
+	let progress = {
+		current: 0,
+		total: 0,
+		currentFileName: ''
+	};
 
-	async function handleGenerate() {
-		if (!projectPath) {
-			status = 'Please select project directory or file';
+	onMount(async () => {
+		try {
+			const response = await fetch('/api/settings');
+			settings = await response.json();
+		} catch (error) {
+			console.error('Failed to load settings:', error);
+			alert('Failed to load settings. Please check storage/settings.json file.');
+		}
+	});
+
+	async function processFiles(files: File[]) {
+		const docs = [];
+
+		for (const file of files) {
+			progress.currentFileName = file.name;
+			progress.current++;
+
+			const content = await file.text();
+			const extension = file.name.split('.').pop()?.toLowerCase();
+
+			let parsedContent;
+			if (extension === 'ts' || extension === 'tsx') {
+				parsedContent = await parseTypescript(content, file.name);
+			} else if (extension === 'svelte') {
+				parsedContent = await parseSvelte(content, file.name);
+			}
+
+			if (parsedContent) {
+				const aiResponse = await processWithAI(JSON.stringify(parsedContent));
+				docs.push({
+					fileName: file.name,
+					documentation: aiResponse
+				});
+			}
+		}
+
+		return docs;
+	}
+
+	async function processWithAI(content: string) {
+		const provider = settings.aiProviders.find((p) => p.name === settings.selectedProvider);
+		if (!provider) throw new Error('No AI provider selected');
+
+		const response = await fetch(provider.apiEndpoint, {
+			method: 'POST',
+			headers: provider.headers,
+			body: JSON.stringify({
+				...provider.body,
+				messages: [
+					{
+						role: 'user',
+						content: `Generate documentation for this parsed code:\n\n${content}`
+					}
+				]
+			})
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			console.error('Full error response:', errorText); // For debugging
+			throw new Error(`AI API request failed: ${errorText}`);
+		}
+
+		return response.json();
+	}
+
+	function generateMarkdownFile(docs: any[]) {
+		let markdown = `# Project Documentation\n\n`;
+
+		docs.forEach((doc) => {
+			markdown += `## ${doc.fileName}\n\n`;
+
+			if (typeof doc.documentation === 'string') {
+				markdown += doc.documentation;
+			} else if (doc.documentation.choices?.[0]?.message?.content) {
+				// OpenAI format
+				markdown += doc.documentation.choices[0].message.content;
+			} else if (doc.documentation.content) {
+				// Generic format
+				markdown += doc.documentation.content;
+			}
+
+			markdown += '\n\n---\n\n';
+		});
+
+		return markdown;
+	}
+
+	async function saveDocumentation(content: string, filename: string) {
+		const response = await fetch('/api/save-docs', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				content,
+				filename
+			})
+		});
+
+		if (!response.ok) {
+			throw new Error('Failed to save documentation');
+		}
+
+		return response.json();
+	}
+
+	async function handleSubmit() {
+		if (!selectedFiles || selectedFiles.length === 0) {
+			alert('Please select a file or folder first');
 			return;
 		}
 
 		isProcessing = true;
-		status = 'Generating documentation...';
+		progress.total = selectedFiles.length;
+		progress.current = 0;
+		documentationOutput = [];
 
 		try {
-			const response = await fetch('/api/genDocs', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					projectPath,
-					projectName: projectName || getDefaultProjectName(projectPath),
-					outputType,
-					outputPath,
-					inputType
-				})
-			});
+			const files = Array.from(selectedFiles);
+			const documentation = await processFiles(files);
 
-			if (!response.ok) throw new Error('Failed to generate documentation');
+			// Generate markdown
+			const markdown = generateMarkdownFile(documentation);
 
-			const docs = await response.json();
-			if (outputType === 'default') {
-				docStore.setDocs(docs.components);
-				status = 'Documentation generated successfully!';
-				docsGenerated = true;
-				activeTab = 'view';
+			// Save to storage folder
+			const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+			const filename = `documentation-${timestamp}.md`;
+
+			const result = await saveDocumentation(markdown, filename);
+
+			if (result.success) {
+				alert('Documentation saved successfully!');
 			} else {
-				status = 'Documentation saved to selected location!';
-				docsGenerated = true;
+				throw new Error('Failed to save documentation');
 			}
+
+			// Store for preview if needed
+			documentationOutput = documentation;
 		} catch (error) {
-			status = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+			console.error('Error generating documentation:', error);
+			alert('An error occurred while generating documentation');
 		} finally {
 			isProcessing = false;
-		}
-	}
-
-	async function handleAIEnhance(apiKey: string, prompt: string, saveKey: boolean) {
-		isProcessing = true;
-		status = 'Enhancing documentation with AI...';
-
-		try {
-			const response = await fetch('/api/aiEnhance', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					apiKey,
-					prompt,
-					projectPath,
-					projectName: projectName || getDefaultProjectName(projectPath),
-					outputType,
-					outputPath,
-					inputType
-				})
-			});
-
-			if (!response.ok) throw new Error('Failed to enhance documentation');
-
-			const docs = await response.json();
-			if (outputType === 'default') {
-				docStore.setDocs(docs.components);
-				status = 'Documentation enhanced successfully!';
-			} else {
-				status = 'Enhanced documentation saved to selected location!';
-			}
-		} catch (error) {
-			throw new Error(
-				`Enhancement failed: ${error instanceof Error ? error.message : 'Unknown error'}`
-			);
-		} finally {
-			isProcessing = false;
-		}
-	}
-
-	function getDefaultProjectName(path: string): string {
-		return path.split('/').pop()?.split('.')[0] || 'unnamed-project';
-	}
-
-	async function selectPath(type: 'input' | 'output') {
-		try {
-			let handle;
-			if (type === 'input') {
-				if (inputType === 'file') {
-					const [fileHandle] = await (window as any).showOpenFilePicker({
-						types: [
-							{
-								description: 'Supported Files',
-								accept: {
-									'text/plain': ['.svelte', '.go' /* Add more supported file types here */]
-								}
-							}
-						]
-					});
-					handle = fileHandle;
-				} else {
-					handle = await (window as any).showDirectoryPicker();
-				}
-				projectPath = handle.name;
-				projectName = getDefaultProjectName(handle.name);
-			} else {
-				handle = await (window as any).showDirectoryPicker();
-				outputPath = handle.name;
-			}
-		} catch (error) {
-			status = `Error selecting ${type}: ${error instanceof Error ? error.message : 'Unknown error'}`;
 		}
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<!-- Header and tabs remain the same -->
+<div class="min-h-screen bg-gray-50 p-8">
+	<div class="mx-auto max-w-2xl rounded-lg bg-white p-6 shadow-md">
+		<!-- Tabs -->
+		<div class="border-b border-gray-200">
+			<nav class="-mb-px flex">
+				<button
+					class="px-6 py-4 {activeTab === 'generator'
+						? 'border-b-2 border-blue-500 text-blue-600'
+						: 'text-gray-500'}"
+					on:click={() => (activeTab = 'generator')}
+				>
+					Generator
+				</button>
+				<button
+					class="px-6 py-4 {activeTab === 'settings'
+						? 'border-b-2 border-blue-500 text-blue-600'
+						: 'text-gray-500'}"
+					on:click={() => (activeTab = 'settings')}
+				>
+					Settings
+				</button>
+			</nav>
+		</div>
 
-	<main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-		{#if activeTab === 'generate'}
-			<div class="space-y-6 rounded-lg bg-white p-6 shadow">
-				<!-- Framework Selection remains the same -->
+		<!-- Content -->
+		<div class="p-6">
+			{#if activeTab === 'generator'}
+				<h1 class="mb-6 text-2xl font-bold">Documentation Generator</h1>
 
-				<!-- Input Type Selection -->
-				<div>
-					<label for="Input Type" class="block text-sm font-medium text-gray-700">Input Type</label>
-					<div class="mt-2 space-x-4">
-						<label class="inline-flex items-center">
-							<input type="radio" bind:group={inputType} value="file" class="form-radio" />
-							<span class="ml-2">Single File</span>
+				<div class="space-y-6">
+					<!-- Selection Type -->
+					<div class="flex space-x-4">
+						<label class="flex items-center">
+							<input type="radio" name="type" value="file" bind:group={selectedType} class="mr-2" />
+							Single File
 						</label>
-						<label class="inline-flex items-center">
-							<input type="radio" bind:group={inputType} value="folder" class="form-radio" />
-							<span class="ml-2">Project Folder</span>
-						</label>
-					</div>
-				</div>
-
-				<!-- Input Path -->
-				<div>
-					<label
-						for={inputType === 'file' ? 'Select File' : 'Select Project Directory'}
-						class="block text-sm font-medium text-gray-700"
-					>
-						{inputType === 'file' ? 'Select File' : 'Select Project Directory'}
-					</label>
-					<div class="mt-1 flex rounded-md shadow-sm">
-						<input
-							type="text"
-							bind:value={projectPath}
-							readonly
-							placeholder={inputType === 'file' ? 'Select file' : 'Select project directory'}
-							class="block w-full min-w-0 flex-1 rounded-l-md border border-gray-300 bg-gray-50 px-3 py-2"
-						/>
-						<button
-							type="button"
-							on:click={() => selectPath('input')}
-							class="inline-flex items-center rounded-r-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-						>
-							Browse
-						</button>
-					</div>
-				</div>
-
-				<!-- Project Name (only shown for folders) -->
-				{#if inputType === 'folder'}
-					<div>
-						<label for="Project Name" class="block text-sm font-medium text-gray-700"
-							>Project Name</label
-						>
-						<input
-							type="text"
-							bind:value={projectName}
-							placeholder="Enter project name"
-							class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"
-						/>
-					</div>
-				{/if}
-
-				<!-- Output Type Selection -->
-				<div>
-					<label for="Output Location" class="block text-sm font-medium text-gray-700"
-						>Output Location</label
-					>
-					<div class="mt-2 space-x-4">
-						<label class="inline-flex items-center">
-							<input type="radio" bind:group={outputType} value="default" class="form-radio" />
-							<span class="ml-2">View in DocViewer</span>
-						</label>
-						<label class="inline-flex items-center">
-							<input type="radio" bind:group={outputType} value="custom" class="form-radio" />
-							<span class="ml-2">Custom Location</span>
-						</label>
-					</div>
-				</div>
-
-				<!-- Custom Output Path -->
-				{#if outputType === 'custom'}
-					<div>
-						<label for="Output Directory" class="block text-sm font-medium text-gray-700"
-							>Output Directory</label
-						>
-						<div class="mt-1 flex rounded-md shadow-sm">
+						<label class="flex items-center">
 							<input
-								type="text"
-								bind:value={outputPath}
-								readonly
-								placeholder="Select output directory"
-								class="block w-full min-w-0 flex-1 rounded-l-md border border-gray-300 bg-gray-50 px-3 py-2"
+								type="radio"
+								name="type"
+								value="folder"
+								bind:group={selectedType}
+								class="mr-2"
 							/>
-							<button
-								type="button"
-								on:click={() => selectPath('output')}
-								class="inline-flex items-center rounded-r-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-							>
-								Browse
-							</button>
+							Folder
+						</label>
+					</div>
+
+					<!-- File Input -->
+					<div class="rounded-lg border-2 border-dashed border-gray-300 p-8 text-center">
+						<input
+							type="file"
+							bind:this={fileInput}
+							bind:files={selectedFiles}
+							webkitdirectory={selectedType === 'folder'}
+							multiple={selectedType === 'folder'}
+							class="hidden"
+							on:change={() => console.log('Files selected:', selectedFiles)}
+						/>
+
+						<button
+							class="rounded-md bg-blue-50 px-4 py-2 text-blue-600 transition-colors hover:bg-blue-100"
+							on:click={() => fileInput.click()}
+						>
+							{selectedType === 'file' ? 'Choose File' : 'Choose Folder'}
+						</button>
+
+						{#if selectedFiles && selectedFiles.length > 0}
+							<div class="mt-4 text-sm text-gray-600">
+								{selectedFiles.length}
+								{selectedFiles.length === 1 ? 'file' : 'files'} selected
+							</div>
+						{/if}
+					</div>
+				</div>
+
+				<!-- Progress Indicator -->
+				{#if isProcessing}
+					<div class="mt-4 space-y-2">
+						<div class="h-2.5 w-full rounded-full bg-gray-200">
+							<div
+								class="h-2.5 rounded-full bg-blue-600 transition-all duration-300"
+								style="width: {(progress.current / progress.total) * 100}%"
+							></div>
+						</div>
+						<div class="text-sm text-gray-600">
+							Processing {progress.currentFileName} ({progress.current}/{progress.total})
 						</div>
 					</div>
 				{/if}
 
-				<!-- Generate and Enhance Buttons -->
-				<div class="flex flex-col space-y-4">
-					<button
-						type="button"
-						on:click={handleGenerate}
-						disabled={isProcessing || !projectPath || (outputType === 'custom' && !outputPath)}
-						class="flex w-full justify-center rounded-md border border-transparent bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-400"
-					>
-						{isProcessing ? 'Generating...' : 'Generate Documentation'}
-					</button>
+				<!-- Submit Button -->
+				<button
+					class="w-full rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:bg-gray-400"
+					on:click={handleSubmit}
+					disabled={isProcessing || !selectedFiles}
+				>
+					{isProcessing ? 'Generating Documentation...' : 'Generate Documentation'}
+				</button>
 
-					{#if docsGenerated}
-						<button
-							type="button"
-							on:click={() => (showAIModal = true)}
-							disabled={isProcessing}
-							class="flex w-full justify-center rounded-md border border-indigo-600 bg-white px-4 py-2 text-sm font-medium text-indigo-600 shadow-sm hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							Enhance with AI
-						</button>
-					{/if}
-				</div>
-
-				<!-- Status Message -->
-				{#if status}
-					<div
-						class="rounded-md p-4 {status.includes('Error')
-							? 'bg-red-50 text-red-700'
-							: 'bg-green-50 text-green-700'}"
-					>
-						{status}
+				<!-- Current AI Provider Display -->
+				{#if settings}
+					<div class="mt-4 text-sm text-gray-600">
+						Using AI Provider: {settings.selectedProvider}
 					</div>
 				{/if}
-			</div>
-		{:else}
-			<!-- DocViewer tab content -->
-		{/if}
-
-		<AIEnhancementModal
-			isOpen={showAIModal}
-			onClose={() => (showAIModal = false)}
-			onEnhance={handleAIEnhance}
-		/>
-	</main>
+			{:else if activeTab === 'settings'}
+				<h1 class="mb-6 text-2xl font-bold">Settings</h1>
+				<SettingsTab />
+			{/if}
+		</div>
+	</div>
 </div>
